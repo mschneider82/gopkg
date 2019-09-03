@@ -1,4 +1,4 @@
-module github.com/zikes/gopkg
+module github.com/mschneider82/gopkg
 
 go 1.12
 
