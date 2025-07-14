@@ -191,17 +191,27 @@ func (m GoPackage) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 	targetPath := m.Path
 	targetURL := m.URL
 	
-	// Check if request matches any submodule
+	// Find the best (longest) matching submodule
+	bestMatch := ""
+	bestURL := ""
 	for _, submodule := range m.Submodules {
 		submodulePath := m.Path + submodule.Path
-		if r.URL.Path == submodulePath || 
-		   r.URL.Path == submodulePath+"/" ||
-		   strings.HasPrefix(r.URL.Path, submodulePath+"/") {
-			targetPath = submodulePath
+		if (r.URL.Path == submodulePath || 
+		    r.URL.Path == submodulePath+"/" ||
+		    strings.HasPrefix(r.URL.Path, submodulePath+"/")) &&
+		   len(submodulePath) > len(bestMatch) {
+			bestMatch = submodulePath
 			if submodule.URL != "" {
-				targetURL = submodule.URL
+				bestURL = submodule.URL
 			}
-			break
+		}
+	}
+	
+	// Use best match if found
+	if bestMatch != "" {
+		targetPath = bestMatch
+		if bestURL != "" {
+			targetURL = bestURL
 		}
 	}
 
