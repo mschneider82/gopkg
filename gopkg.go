@@ -25,6 +25,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"html/template"
 	"net/http"
+	"strings"
 )
 
 // DefaultTemplate is the default HTML template used as a response.
@@ -66,8 +67,23 @@ type GoPackage struct {
 	// This is where the go tool will go to download the source code.
 	URL string `json:"url"`
 
+	// Submodules contains optional submodule configurations for packages with multiple modules.
+	//
+	// Each submodule entry maps a subpath to its specific source URL. If URL is empty,
+	// it defaults to the parent package URL.
+	Submodules []Submodule `json:"submodules,omitempty"`
+
 	// Template is the template used when returning a response (instead of redirecting).
 	Template *template.Template
+}
+
+// Submodule represents a submodule within a go package.
+type Submodule struct {
+	// Path is the submodule path relative to the parent package path.
+	Path string `json:"path"`
+
+	// URL is the URL of the submodule's source. If empty, defaults to parent package URL.
+	URL string `json:"url,omitempty"`
 }
 
 func (m GoPackage) CaddyModule() caddy.ModuleInfo {
@@ -107,7 +123,9 @@ func parseCaddyFile(h httpcaddyfile.Helper) ([]httpcaddyfile.ConfigValue, error)
 
 // UnmarshalCaddyfile implements caddyfile.Unmarshaler. Syntax:
 //
-//     gopkg <path> [<vcs>] <uri>
+//     gopkg <path> [<vcs>] <uri> {
+//         submodule <subpath> [<suburi>]
+//     }
 //
 func (m *GoPackage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
@@ -125,6 +143,27 @@ func (m *GoPackage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			m.URL = args[0]
 		default:
 			return d.ArgErr()
+		}
+
+		// Parse optional block for submodules
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "submodule":
+				submodule := Submodule{}
+				if !d.Args(&submodule.Path) {
+					return d.ArgErr()
+				}
+				
+				// Optional submodule URL
+				remainingArgs := d.RemainingArgs()
+				if len(remainingArgs) > 0 {
+					submodule.URL = remainingArgs[0]
+				}
+				
+				m.Submodules = append(m.Submodules, submodule)
+			default:
+				return d.Errf("unrecognized subdirective '%s'", d.Val())
+			}
 		}
 	}
 
@@ -148,9 +187,27 @@ func (m *GoPackage) Provision(ctx caddy.Context) error {
 }
 
 func (m GoPackage) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Determine the best match for the request path
+	targetPath := m.Path
+	targetURL := m.URL
+	
+	// Check if request matches any submodule
+	for _, submodule := range m.Submodules {
+		submodulePath := m.Path + submodule.Path
+		if r.URL.Path == submodulePath || 
+		   r.URL.Path == submodulePath+"/" ||
+		   strings.HasPrefix(r.URL.Path, submodulePath+"/") {
+			targetPath = submodulePath
+			if submodule.URL != "" {
+				targetURL = submodule.URL
+			}
+			break
+		}
+	}
+
 	// If go-get is not present, it's most likely a browser request. So let's redirect.
 	if r.FormValue("go-get") != "1" {
-		http.Redirect(w, r, m.URL, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, targetURL, http.StatusTemporaryRedirect)
 		return nil
 	}
 
@@ -159,7 +216,7 @@ func (m GoPackage) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		Path string
 		Vcs  string
 		URL  string
-	}{r.Host, m.Path, m.Vcs, m.URL})
+	}{r.Host, targetPath, m.Vcs, targetURL})
 
 	if err != nil {
 		return caddyhttp.Error(http.StatusInternalServerError, err)
